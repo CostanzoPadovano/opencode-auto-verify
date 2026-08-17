@@ -18,6 +18,7 @@ const agentsEndMarker = "<!-- END OPENCODE AUTO-VERIFY -->"
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
 
 const agentsFile = path.join(configRoot, "AGENTS.md")
+const environmentFile = path.join(configRoot, "auto-verify.env")
 const pluginsDir = path.join(configRoot, "plugins")
 const pluginFile = path.join(pluginsDir, "auto-verify-guardian.js")
 const coreFile = path.join(pluginsDir, "auto-verify-core.mjs")
@@ -66,6 +67,8 @@ const report = {
   quarantine_target: quarantineFile,
   permissions_example: path.join(projectRoot, "examples", "opencode.permissions.jsonc"),
   environment_example: path.join(projectRoot, "examples", "server.env.example"),
+  environment_target: environmentFile,
+  environment_file_present: existsSync(environmentFile),
 }
 
 if (!apply) {

@@ -2,20 +2,71 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  applyAutoVerifyEnv,
   classifyCommand,
   classifyToolCall,
   isWithin,
   mergeConversationRecords,
   normalizeUserPath,
+  parseAutoVerifyEnv,
   parseReviewerVerdict,
   parseReviewerVerdictWithRepair,
   PROTECTED_ROOT_SEMANTICS,
   reviewerResponseFormat,
   reviewerSystemPrompt,
+  routerAuthorizationHeaders,
   selectReviewerTranscript,
   selectUserTranscript,
   validateQuarantineTarget,
 } from "../src/auto-verify-core.mjs"
+
+test("parses only known Auto-Verify settings without executing shell syntax", () => {
+  const parsed = parseAutoVerifyEnv(`
+# private deployment settings
+export LLAMA_ROUTER_KEY_FILE="/mnt/c/llama_official/router/api-key.txt"
+OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT=json_schema
+UNKNOWN_SETTING=ignored
+MALFORMED LINE
+`)
+  assert.deepEqual(parsed, {
+    LLAMA_ROUTER_KEY_FILE: "/mnt/c/llama_official/router/api-key.txt",
+    OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT: "json_schema",
+  })
+})
+
+test("explicit process settings override the private Auto-Verify environment file", () => {
+  const target = { LLAMA_ROUTER_KEY_FILE: "/explicit/key" }
+  applyAutoVerifyEnv(target, {
+    LLAMA_ROUTER_KEY_FILE: "/local/key",
+    OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT: "json_schema",
+    UNKNOWN_SETTING: "ignored",
+  })
+  assert.deepEqual(target, {
+    LLAMA_ROUTER_KEY_FILE: "/explicit/key",
+    OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT: "json_schema",
+  })
+})
+
+test("builds reviewer authorization from a private key file without exposing it in config", () => {
+  let requestedPath = ""
+  const headers = routerAuthorizationHeaders(
+    { LLAMA_ROUTER_KEY_FILE: "/private/router-key.txt" },
+    (file) => {
+      requestedPath = file
+      return "test-secret\n"
+    },
+  )
+  assert.equal(requestedPath, "/private/router-key.txt")
+  assert.deepEqual(headers, { Authorization: "Bearer test-secret" })
+
+  const direct = routerAuthorizationHeaders(
+    { LLAMA_ROUTER_API_KEY: "explicit-secret", LLAMA_ROUTER_KEY_FILE: "/unused" },
+    () => {
+      throw new Error("explicit key must take precedence")
+    },
+  )
+  assert.deepEqual(direct, { Authorization: "Bearer explicit-secret" })
+})
 
 test("normalizes an exact Windows path into WSL form", () => {
   assert.equal(

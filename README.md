@@ -50,10 +50,10 @@ Clone the repository, then configure absolute paths in a private environment fil
 ```bash
 cp examples/server.env.example ~/.config/opencode/auto-verify.env
 $EDITOR ~/.config/opencode/auto-verify.env
-set -a
-. ~/.config/opencode/auto-verify.env
-set +a
+chmod 600 ~/.config/opencode/auto-verify.env
 ```
+
+The installed plugin loads this private file directly; it does not execute it as shell code. Explicit process-environment variables take precedence. Keep real keys out of the repository, or configure only `LLAMA_ROUTER_KEY_FILE` so the secret remains in its existing private file.
 
 Preview the installation:
 
@@ -67,7 +67,7 @@ Apply it:
 node scripts/install.mjs ~/.config/opencode --apply
 ```
 
-The installer copies the plugin and its two support modules, preserves timestamped backups, and manages only the marked Auto-Verify block in `AGENTS.md`. It deliberately does not rewrite arbitrary OpenCode JSONC. Merge [the permission example](examples/opencode.permissions.jsonc) into your own configuration, keeping native denial rules as defense in depth.
+The installer copies the plugin and its two support modules, preserves timestamped backups, manages only the marked Auto-Verify block in `AGENTS.md`, and reports whether the private `auto-verify.env` is present. It deliberately does not create credential files or rewrite arbitrary OpenCode JSONC. Merge [the permission example](examples/opencode.permissions.jsonc) into your own configuration, keeping native denial rules as defense in depth.
 
 Restart OpenCode after installation or configuration changes. The reviewer server does not need to be restarted when only the OpenCode plugin or `AGENTS.md` changes.
 
@@ -93,6 +93,7 @@ Path lists are separated by semicolons.
 | `OPENCODE_AUTO_VERIFY_BASE_URL` | OpenAI-compatible API base URL | WSL gateway on port `8030` |
 | `OPENCODE_AUTO_VERIFY_MODEL` | Reviewer model identifier | Current session model when discoverable |
 | `OPENCODE_AUTO_VERIFY_PROVIDER` | Provider label retained for integration compatibility | `llama_router` |
+| `OPENCODE_AUTO_VERIFY_ENV_FILE` | Private deployment environment file loaded without shell execution | `<OpenCode config>/auto-verify.env` |
 | `LLAMA_ROUTER_API_KEY` | Optional API key supplied directly | unset |
 | `LLAMA_ROUTER_KEY_FILE` | Optional file containing the API key | unset |
 | `OPENCODE_AUTO_VERIFY_TIMEOUT_MS` | General review timeout | `180000` |

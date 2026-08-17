@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { opendir, realpath, rename, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { tool } from "@opencode-ai/plugin"
 
 import {
+  applyAutoVerifyEnv,
   DEFAULT_ALLOWED_ROOTS,
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_QUARANTINE_ROOT,
@@ -14,10 +16,12 @@ import {
   classifyToolCall,
   mergeConversationRecords,
   normalizeUserPath,
+  parseAutoVerifyEnv,
   parsePathList,
   parseReviewerVerdictWithRepair,
   reviewerResponseFormat,
   reviewerSystemPrompt,
+  routerAuthorizationHeaders,
   selectReviewerTranscript,
   validateQuarantineTarget,
 } from "./auto-verify-core.mjs"
@@ -29,32 +33,47 @@ import {
   prepareQuarantineDestination,
 } from "./quarantine-fs.mjs"
 
-const REVIEW_TIMEOUT_MS = Number(process.env.OPENCODE_AUTO_VERIFY_TIMEOUT_MS || 180_000)
-const REVIEW_OUTPUT_TOKENS = Number(process.env.OPENCODE_AUTO_VERIFY_MAX_TOKENS || 8_192)
-const REVIEW_REASONING_EFFORT = process.env.OPENCODE_AUTO_VERIFY_REASONING_EFFORT || "xhigh"
-const REVIEW_RESPONSE_FORMAT_MODE = (process.env.OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT || "json_schema")
+const DEFAULT_ENV_FILE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "auto-verify.env",
+)
+const AUTO_VERIFY_ENV_FILE = process.env.OPENCODE_AUTO_VERIFY_ENV_FILE?.trim() || DEFAULT_ENV_FILE
+let LOCAL_ENV = {}
+try {
+  LOCAL_ENV = parseAutoVerifyEnv(readFileSync(AUTO_VERIFY_ENV_FILE, "utf8"))
+} catch {
+  // A missing optional local environment file preserves explicit process env
+  // and built-in defaults. Reviewer authentication will still fail closed.
+}
+const RUNTIME_ENV = applyAutoVerifyEnv({ ...process.env }, LOCAL_ENV)
+
+const REVIEW_TIMEOUT_MS = Number(RUNTIME_ENV.OPENCODE_AUTO_VERIFY_TIMEOUT_MS || 180_000)
+const REVIEW_OUTPUT_TOKENS = Number(RUNTIME_ENV.OPENCODE_AUTO_VERIFY_MAX_TOKENS || 8_192)
+const REVIEW_REASONING_EFFORT = RUNTIME_ENV.OPENCODE_AUTO_VERIFY_REASONING_EFFORT || "xhigh"
+const REVIEW_RESPONSE_FORMAT_MODE = (RUNTIME_ENV.OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT || "json_schema")
   .trim()
   .toLowerCase()
-const SCHEMA_REPAIR_OUTPUT_TOKENS = Number(process.env.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_MAX_TOKENS || 1_024)
-const SCHEMA_REPAIR_REASONING_EFFORT = process.env.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_REASONING_EFFORT || "low"
-const QUARANTINE_REVIEW_OUTPUT_TOKENS = Number(process.env.OPENCODE_QUARANTINE_REVIEW_MAX_TOKENS || 2_048)
-const QUARANTINE_REVIEW_REASONING_EFFORT = process.env.OPENCODE_QUARANTINE_REVIEW_REASONING_EFFORT || "low"
-const PREVIEW_TTL_MS = Number(process.env.OPENCODE_QUARANTINE_PREVIEW_TTL_MS || 10 * 60_000)
-const PREVIEW_SCAN_LIMIT = Number(process.env.OPENCODE_QUARANTINE_SCAN_LIMIT || 20_000)
+const SCHEMA_REPAIR_OUTPUT_TOKENS = Number(RUNTIME_ENV.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_MAX_TOKENS || 1_024)
+const SCHEMA_REPAIR_REASONING_EFFORT = RUNTIME_ENV.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_REASONING_EFFORT || "low"
+const QUARANTINE_REVIEW_OUTPUT_TOKENS = Number(RUNTIME_ENV.OPENCODE_QUARANTINE_REVIEW_MAX_TOKENS || 2_048)
+const QUARANTINE_REVIEW_REASONING_EFFORT = RUNTIME_ENV.OPENCODE_QUARANTINE_REVIEW_REASONING_EFFORT || "low"
+const PREVIEW_TTL_MS = Number(RUNTIME_ENV.OPENCODE_QUARANTINE_PREVIEW_TTL_MS || 10 * 60_000)
+const PREVIEW_SCAN_LIMIT = Number(RUNTIME_ENV.OPENCODE_QUARANTINE_SCAN_LIMIT || 20_000)
 
-const ALLOWED_ROOTS = parsePathList(process.env.OPENCODE_QUARANTINE_ALLOWED_ROOTS, DEFAULT_ALLOWED_ROOTS)
-const PROTECTED_PATHS = parsePathList(process.env.OPENCODE_PROTECTED_PATHS, DEFAULT_PROTECTED_PATHS)
+const ALLOWED_ROOTS = parsePathList(RUNTIME_ENV.OPENCODE_QUARANTINE_ALLOWED_ROOTS, DEFAULT_ALLOWED_ROOTS)
+const PROTECTED_PATHS = parsePathList(RUNTIME_ENV.OPENCODE_PROTECTED_PATHS, DEFAULT_PROTECTED_PATHS)
 const ROUTINE_WRITABLE_ROOTS = parsePathList(
-  process.env.OPENCODE_AUTO_VERIFY_WRITABLE_ROOTS,
+  RUNTIME_ENV.OPENCODE_AUTO_VERIFY_WRITABLE_ROOTS,
   DEFAULT_ROUTINE_WRITABLE_ROOTS,
 )
-const QUARANTINE_ROOT = normalizeUserPath(process.env.OPENCODE_QUARANTINE_ROOT || DEFAULT_QUARANTINE_ROOT)
+const QUARANTINE_ROOT = normalizeUserPath(RUNTIME_ENV.OPENCODE_QUARANTINE_ROOT || DEFAULT_QUARANTINE_ROOT)
 
 const sessionState = new Map()
 const pendingQuarantines = new Map()
 
 function windowsHost() {
-  if (process.env.LLAMA_ROUTER_WINDOWS_HOST) return process.env.LLAMA_ROUTER_WINDOWS_HOST
+  if (RUNTIME_ENV.LLAMA_ROUTER_WINDOWS_HOST) return RUNTIME_ENV.LLAMA_ROUTER_WINDOWS_HOST
   try {
     const route = execFileSync("ip", ["route", "show", "default"], { encoding: "utf8" })
     return route.match(/\bvia\s+(\S+)/)?.[1] || "172.19.48.1"
@@ -64,21 +83,11 @@ function windowsHost() {
 }
 
 function reviewerBaseUrl(providerID) {
-  if (process.env.OPENCODE_AUTO_VERIFY_BASE_URL) {
-    return process.env.OPENCODE_AUTO_VERIFY_BASE_URL.replace(/\/+$/, "")
+  if (RUNTIME_ENV.OPENCODE_AUTO_VERIFY_BASE_URL) {
+    return RUNTIME_ENV.OPENCODE_AUTO_VERIFY_BASE_URL.replace(/\/+$/, "")
   }
   const host = windowsHost()
-  return `http://${host}:${process.env.LLAMA_ROUTER_PORT || 8030}/v1`
-}
-
-function routerKey() {
-  if (process.env.LLAMA_ROUTER_API_KEY?.trim()) return process.env.LLAMA_ROUTER_API_KEY.trim()
-  if (!process.env.LLAMA_ROUTER_KEY_FILE) return ""
-  try {
-    return readFileSync(process.env.LLAMA_ROUTER_KEY_FILE, "utf8").trim()
-  } catch {
-    return ""
-  }
+  return `http://${host}:${RUNTIME_ENV.LLAMA_ROUTER_PORT || 8030}/v1`
 }
 
 async function log(client, level, message, extra = {}) {
@@ -154,8 +163,8 @@ async function modelReview({
 }) {
   const records = await sessionRecords(client, sessionID)
   const model = currentModel(records, sessionID)
-  const modelID = process.env.OPENCODE_AUTO_VERIFY_MODEL || model?.modelID
-  const providerID = process.env.OPENCODE_AUTO_VERIFY_PROVIDER || model?.providerID || "llama_router"
+  const modelID = RUNTIME_ENV.OPENCODE_AUTO_VERIFY_MODEL || model?.modelID
+  const providerID = RUNTIME_ENV.OPENCODE_AUTO_VERIFY_PROVIDER || model?.providerID || "llama_router"
 
   if (!modelID) {
     return { allow: false, decision: "deny", reason: "reviewer_model_not_resolved", violations: ["no_reviewer_model"] }
@@ -184,9 +193,10 @@ async function modelReview({
     },
   }
 
-  const headers = { "Content-Type": "application/json" }
-  const key = routerKey()
-  if (key) headers.Authorization = `Bearer ${key}`
+  const headers = {
+    "Content-Type": "application/json",
+    ...routerAuthorizationHeaders(RUNTIME_ENV, (file) => readFileSync(file, "utf8")),
+  }
 
   const requestCompletion = async ({ reviewEnvelope, effort, tokenBudget }) => {
     const body = {
@@ -225,13 +235,16 @@ async function modelReview({
     }
 
     if (!response.ok) {
+      const authenticationFailure = response.status === 401 || response.status === 403
       return {
         ok: false,
         verdict: {
           allow: false,
           decision: "deny",
-          reason: `reviewer_http_${response.status}`,
-          violations: ["reviewer_http_error"],
+          reason: authenticationFailure
+            ? `reviewer_http_${response.status}: configure LLAMA_ROUTER_API_KEY or LLAMA_ROUTER_KEY_FILE in ${AUTO_VERIFY_ENV_FILE}`
+            : `reviewer_http_${response.status}`,
+          violations: [authenticationFailure ? "reviewer_authentication_error" : "reviewer_http_error"],
         },
       }
     }

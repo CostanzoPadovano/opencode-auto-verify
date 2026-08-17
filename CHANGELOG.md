@@ -12,6 +12,7 @@ All notable changes to this project will be documented here. The format follows 
 - Routed GNU `find` output-file actions through review instead of treating them as read-only, and made WSL Windows-mount boundaries case-insensitive.
 - Refused symlinked components while creating a configured quarantine root, before any child directory can be created through the redirect.
 - Added strict JSON-Schema-constrained reviewer output and one monotonic, fail-closed schema-repair attempt so an omitted field cannot silently authorize or unnecessarily terminate a legitimate reviewed action.
+- Load an allowlisted private `auto-verify.env` directly so reviewer credentials survive restarts without hard-coded secrets or shell-profile coupling, and make HTTP authentication failures actionable.
 
 ## [0.1.0] - 2026-08-17
 

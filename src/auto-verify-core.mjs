@@ -2,6 +2,71 @@ import path from "node:path"
 
 const posix = path.posix
 
+const AUTO_VERIFY_ENV_NAMES = new Set([
+  "OPENCODE_QUARANTINE_ALLOWED_ROOTS",
+  "OPENCODE_AUTO_VERIFY_WRITABLE_ROOTS",
+  "OPENCODE_PROTECTED_PATHS",
+  "OPENCODE_QUARANTINE_ROOT",
+  "OPENCODE_AUTO_VERIFY_BASE_URL",
+  "OPENCODE_AUTO_VERIFY_MODEL",
+  "OPENCODE_AUTO_VERIFY_PROVIDER",
+  "OPENCODE_AUTO_VERIFY_TIMEOUT_MS",
+  "OPENCODE_AUTO_VERIFY_REASONING_EFFORT",
+  "OPENCODE_AUTO_VERIFY_MAX_TOKENS",
+  "OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT",
+  "OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_REASONING_EFFORT",
+  "OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_MAX_TOKENS",
+  "OPENCODE_QUARANTINE_REVIEW_REASONING_EFFORT",
+  "OPENCODE_QUARANTINE_REVIEW_MAX_TOKENS",
+  "OPENCODE_QUARANTINE_PREVIEW_TTL_MS",
+  "OPENCODE_QUARANTINE_SCAN_LIMIT",
+  "LLAMA_ROUTER_API_KEY",
+  "LLAMA_ROUTER_KEY_FILE",
+  "LLAMA_ROUTER_WINDOWS_HOST",
+  "LLAMA_ROUTER_PORT",
+])
+
+export function parseAutoVerifyEnv(content) {
+  const result = {}
+  for (const rawLine of String(content ?? "").split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith("#")) continue
+    const match = line.match(/^(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/)
+    if (!match || !AUTO_VERIFY_ENV_NAMES.has(match[1])) continue
+
+    let value = match[2].trim()
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1)
+    }
+    if (value.includes("\0")) continue
+    result[match[1]] = value
+  }
+  return result
+}
+
+export function applyAutoVerifyEnv(target, localValues) {
+  for (const [name, value] of Object.entries(localValues ?? {})) {
+    if (AUTO_VERIFY_ENV_NAMES.has(name) && target[name] === undefined) target[name] = value
+  }
+  return target
+}
+
+export function routerAuthorizationHeaders(environment, readKeyFile) {
+  let key = environment?.LLAMA_ROUTER_API_KEY?.trim() || ""
+  if (!key && environment?.LLAMA_ROUTER_KEY_FILE && typeof readKeyFile === "function") {
+    try {
+      key = String(readKeyFile(environment.LLAMA_ROUTER_KEY_FILE) ?? "").trim()
+    } catch {
+      key = ""
+    }
+  }
+  return key ? { Authorization: `Bearer ${key}` } : {}
+}
+
 export const DEFAULT_ALLOWED_ROOTS = ["/workspace"]
 export const DEFAULT_ROUTINE_WRITABLE_ROOTS = ["/workspace", "/tmp/opencode"]
 export const DEFAULT_PROTECTED_PATHS = [
