@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    // Auto-Verify handles routine and bounded review paths. Keep explicit
+    // permanent-destruction denials here as an independent backstop.
+    "*": "allow",
+    "bash": {
+      "*": "allow",
+
+      "rm -r *": "deny",
+      "rm -rf *": "deny",
+      "rm -fr *": "deny",
+      "rm --recursive *": "deny",
+      "*/rm -r *": "deny",
+      "*/rm -rf *": "deny",
+      "*/rm --recursive *": "deny",
+      "sudo rm *": "deny",
+      "find * -delete*": "deny",
+      "find * -exec rm*": "deny",
+
+      "git clean*": "deny",
+      "git reset --hard*": "deny",
+      "git checkout -- *": "deny",
+      "git restore *--worktree*": "deny",
+      "git restore .": "deny",
+      "git restore -- .": "deny",
+      "git restore :/*": "deny",
+
+      "python*shutil.rmtree*": "deny",
+      "python*os.system*rm*": "deny",
+      "powershell*Remove-Item*-Recurse*": "deny",
+      "powershell*Remove-Item*-Force*": "deny",
+      "powershell* ri *-Recurse*": "deny",
+      "powershell* ri * -r *": "deny",
+      "powershell* del *-Recurse*": "deny",
+      "cmd*rmdir*/s*": "deny",
+      "cmd*del*/s*": "deny",
+
+      "robocopy*/MIR*": "deny",
+      "robocopy*/PURGE*": "deny",
+      "rsync*--delete*": "deny"
+    }
+  }
+}
