@@ -652,6 +652,81 @@ export function selectReviewerTranscript(records, maxCharacters = 70_000) {
     .map((entry, index) => structuredConversationEntry(entry, index + 1))
 }
 
+const REVIEWER_VERDICT_FIELDS = [
+  "decision",
+  "risk_level",
+  "user_authorized",
+  "scope_match",
+  "protected_conflict",
+  "violations",
+  "reason",
+]
+const REVIEWER_DECISIONS = new Set(["allow", "deny"])
+const REVIEWER_RISK_LEVELS = new Set(["low", "medium", "high", "critical"])
+const REVIEWER_REASON_MAX_LENGTH = 400
+
+export function reviewerResponseFormat() {
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: "auto_verify_verdict",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: [...REVIEWER_VERDICT_FIELDS],
+        properties: {
+          decision: { type: "string", enum: ["allow", "deny"] },
+          risk_level: { type: "string", enum: ["low", "medium", "high", "critical"] },
+          user_authorized: { type: "boolean" },
+          scope_match: { type: "boolean" },
+          protected_conflict: { type: "boolean" },
+          violations: {
+            type: "array",
+            items: { type: "string", minLength: 1 },
+          },
+          reason: { type: "string", minLength: 1, maxLength: REVIEWER_REASON_MAX_LENGTH },
+        },
+      },
+    },
+  }
+}
+
+function reviewerSchemaErrors(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return ["invalid_verdict_object"]
+
+  const errors = []
+  if (!REVIEWER_DECISIONS.has(parsed.decision)) errors.push("invalid_decision")
+  if (!REVIEWER_RISK_LEVELS.has(parsed.risk_level)) errors.push("invalid_risk_level")
+  if (typeof parsed.user_authorized !== "boolean") errors.push("invalid_user_authorized")
+  if (typeof parsed.scope_match !== "boolean") errors.push("invalid_scope_match")
+  if (typeof parsed.protected_conflict !== "boolean") errors.push("invalid_protected_conflict")
+  if (
+    !Array.isArray(parsed.violations) ||
+    !parsed.violations.every((violation) => typeof violation === "string" && violation.trim().length > 0)
+  ) {
+    errors.push("invalid_violations_array")
+  }
+  if (typeof parsed.reason !== "string" || !parsed.reason.trim()) errors.push("invalid_reason")
+  else if (parsed.reason.length > REVIEWER_REASON_MAX_LENGTH) errors.push("reason_too_long")
+  if (Object.keys(parsed).some((field) => !REVIEWER_VERDICT_FIELDS.includes(field))) {
+    errors.push("unexpected_verdict_fields")
+  }
+  return errors
+}
+
+function schemaFailure(reason) {
+  return {
+    allow: false,
+    decision: "deny",
+    reason,
+    violations: [reason],
+    schemaValid: false,
+    schemaErrors: [reason],
+    raw: null,
+  }
+}
+
 export function parseReviewerVerdict(content) {
   const text = Array.isArray(content)
     ? content.map((part) => (typeof part === "string" ? part : part?.text ?? "")).join("")
@@ -660,30 +735,30 @@ export function parseReviewerVerdict(content) {
   const start = cleaned.indexOf("{")
   const end = cleaned.lastIndexOf("}")
   if (start < 0 || end <= start) {
-    return { allow: false, decision: "deny", reason: "reviewer_returned_no_json" }
+    return schemaFailure("reviewer_returned_no_json")
+  }
+  if (start !== 0 || end !== cleaned.length - 1) {
+    return schemaFailure("reviewer_returned_non_object_wrapper")
   }
 
   let parsed
   try {
     parsed = JSON.parse(cleaned.slice(start, end + 1))
   } catch {
-    return { allow: false, decision: "deny", reason: "reviewer_returned_invalid_json" }
+    return schemaFailure("reviewer_returned_invalid_json")
   }
 
-  const violationsAreValid =
-    Array.isArray(parsed.violations) &&
-    parsed.violations.every((violation) => typeof violation === "string" && violation.trim().length > 0)
-  const violations = violationsAreValid ? parsed.violations : ["invalid_violations_array"]
+  const schemaErrors = reviewerSchemaErrors(parsed)
+  const schemaValid = schemaErrors.length === 0
+  const violations = schemaValid ? parsed.violations : schemaErrors
   const riskAllowsExecution = parsed.risk_level === "low" || parsed.risk_level === "medium"
-  const reasonIsValid = typeof parsed.reason === "string" && parsed.reason.trim().length > 0
   const allow =
+    schemaValid &&
     parsed.decision === "allow" &&
     riskAllowsExecution &&
     parsed.user_authorized === true &&
     parsed.scope_match === true &&
     parsed.protected_conflict === false &&
-    violationsAreValid &&
-    reasonIsValid &&
     violations.length === 0
 
   return {
@@ -692,7 +767,96 @@ export function parseReviewerVerdict(content) {
     reason: String(parsed.reason ?? (allow ? "authorized_and_in_scope" : "reviewer_did_not_prove_authorization")),
     riskLevel: parsed.risk_level,
     violations,
+    schemaValid,
+    schemaErrors,
     raw: parsed,
+  }
+}
+
+function repairContext(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const result = {}
+  for (const field of REVIEWER_VERDICT_FIELDS) {
+    const value = raw[field]
+    if (["decision", "risk_level", "reason"].includes(field) && typeof value === "string") {
+      result[field] = value.slice(0, REVIEWER_REASON_MAX_LENGTH)
+    } else if (["user_authorized", "scope_match", "protected_conflict"].includes(field) && typeof value === "boolean") {
+      result[field] = value
+    } else if (field === "violations" && Array.isArray(value)) {
+      result[field] = value.filter((item) => typeof item === "string" && item.trim()).slice(0, 20)
+    }
+  }
+  return result
+}
+
+function containsNegativeEvidence(raw) {
+  // A repaired allow is safe only when the first response was at least a
+  // parseable object. Prose, invalid JSON, and array wrappers provide no
+  // trustworthy evidence that a later allow preserves the first decision.
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return true
+
+  const stringValue = (value) => (typeof value === "string" ? value.trim().toLowerCase() : "")
+  return Boolean(
+    stringValue(raw.decision) === "deny" ||
+      stringValue(raw.risk_level) === "high" ||
+      stringValue(raw.risk_level) === "critical" ||
+      raw.user_authorized === false ||
+      stringValue(raw.user_authorized) === "false" ||
+      raw.scope_match === false ||
+      stringValue(raw.scope_match) === "false" ||
+      raw.protected_conflict === true ||
+      stringValue(raw.protected_conflict) === "true" ||
+      (Array.isArray(raw.violations) && raw.violations.length > 0)
+  )
+}
+
+export async function parseReviewerVerdictWithRepair(content, repair) {
+  const initial = parseReviewerVerdict(content)
+  if (initial.schemaValid || typeof repair !== "function") {
+    return { ...initial, repairAttempted: false }
+  }
+
+  let repairedContent
+  try {
+    repairedContent = await repair({
+      schemaErrors: [...initial.schemaErrors],
+      previousVerdict: repairContext(initial.raw),
+    })
+  } catch {
+    return {
+      ...schemaFailure("reviewer_schema_repair_failed"),
+      repairAttempted: true,
+      initialSchemaErrors: [...initial.schemaErrors],
+    }
+  }
+
+  const repaired = parseReviewerVerdict(repairedContent)
+  if (!repaired.schemaValid) {
+    return {
+      ...repaired,
+      allow: false,
+      decision: "deny",
+      reason: "reviewer_schema_invalid_after_repair",
+      violations: ["reviewer_schema_invalid_after_repair", ...repaired.schemaErrors],
+      repairAttempted: true,
+      initialSchemaErrors: [...initial.schemaErrors],
+    }
+  }
+  if (repaired.allow && containsNegativeEvidence(initial.raw)) {
+    return {
+      ...repaired,
+      allow: false,
+      decision: "deny",
+      reason: "reviewer_schema_repair_cannot_override_negative_evidence",
+      violations: ["reviewer_schema_repair_cannot_override_negative_evidence"],
+      repairAttempted: true,
+      initialSchemaErrors: [...initial.schemaErrors],
+    }
+  }
+  return {
+    ...repaired,
+    repairAttempted: true,
+    initialSchemaErrors: [...initial.schemaErrors],
   }
 }
 
@@ -714,7 +878,7 @@ Mandatory policy:
 
 Set protected_conflict=true only for a conflict under rule 4 or an explicit user protection. Do not set it merely because an exact target is located below a protected project root.
 
-Return one JSON object and nothing else:
+Return one JSON object and nothing else. Every field is mandatory. Always return violations; use an empty array when there are no violations. Keep reason under ${REVIEWER_REASON_MAX_LENGTH} characters:
 {
   "decision": "allow" | "deny",
   "risk_level": "low" | "medium" | "high" | "critical",

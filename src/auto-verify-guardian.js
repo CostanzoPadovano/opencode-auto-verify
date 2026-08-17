@@ -15,7 +15,8 @@ import {
   mergeConversationRecords,
   normalizeUserPath,
   parsePathList,
-  parseReviewerVerdict,
+  parseReviewerVerdictWithRepair,
+  reviewerResponseFormat,
   reviewerSystemPrompt,
   selectReviewerTranscript,
   validateQuarantineTarget,
@@ -31,6 +32,11 @@ import {
 const REVIEW_TIMEOUT_MS = Number(process.env.OPENCODE_AUTO_VERIFY_TIMEOUT_MS || 180_000)
 const REVIEW_OUTPUT_TOKENS = Number(process.env.OPENCODE_AUTO_VERIFY_MAX_TOKENS || 8_192)
 const REVIEW_REASONING_EFFORT = process.env.OPENCODE_AUTO_VERIFY_REASONING_EFFORT || "xhigh"
+const REVIEW_RESPONSE_FORMAT_MODE = (process.env.OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT || "json_schema")
+  .trim()
+  .toLowerCase()
+const SCHEMA_REPAIR_OUTPUT_TOKENS = Number(process.env.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_MAX_TOKENS || 1_024)
+const SCHEMA_REPAIR_REASONING_EFFORT = process.env.OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_REASONING_EFFORT || "low"
 const QUARANTINE_REVIEW_OUTPUT_TOKENS = Number(process.env.OPENCODE_QUARANTINE_REVIEW_MAX_TOKENS || 2_048)
 const QUARANTINE_REVIEW_REASONING_EFFORT = process.env.OPENCODE_QUARANTINE_REVIEW_REASONING_EFFORT || "low"
 const PREVIEW_TTL_MS = Number(process.env.OPENCODE_QUARANTINE_PREVIEW_TTL_MS || 10 * 60_000)
@@ -130,6 +136,12 @@ function extractContent(payload) {
   return payload?.choices?.[0]?.message?.content ?? payload?.output_text ?? ""
 }
 
+function configuredReviewerResponseFormat() {
+  if (REVIEW_RESPONSE_FORMAT_MODE === "off") return null
+  if (REVIEW_RESPONSE_FORMAT_MODE === "json_object") return { type: "json_object" }
+  return reviewerResponseFormat()
+}
+
 async function modelReview({
   client,
   sessionID,
@@ -176,50 +188,97 @@ async function modelReview({
   const key = routerKey()
   if (key) headers.Authorization = `Bearer ${key}`
 
-  let response
-  try {
-    response = await fetch(`${reviewerBaseUrl(providerID)}/chat/completions`, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
-      body: JSON.stringify({
-        model: modelID,
-        messages: [
-          { role: "system", content: reviewerSystemPrompt() },
-          { role: "user", content: JSON.stringify(envelope) },
-        ],
-        reasoning_effort: reasoningEffort,
-        temperature: 0,
-        top_p: 1,
-        max_tokens: maxTokens,
-        stream: false,
-      }),
+  const requestCompletion = async ({ reviewEnvelope, effort, tokenBudget }) => {
+    const body = {
+      model: modelID,
+      messages: [
+        { role: "system", content: reviewerSystemPrompt() },
+        { role: "user", content: JSON.stringify(reviewEnvelope) },
+      ],
+      reasoning_effort: effort,
+      temperature: 0,
+      top_p: 1,
+      max_tokens: tokenBudget,
+      stream: false,
+    }
+    const responseFormat = configuredReviewerResponseFormat()
+    if (responseFormat) body.response_format = responseFormat
+
+    let response
+    try {
+      response = await fetch(`${reviewerBaseUrl(providerID)}/chat/completions`, {
+        method: "POST",
+        headers,
+        signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
+        body: JSON.stringify(body),
+      })
+    } catch (error) {
+      return {
+        ok: false,
+        verdict: {
+          allow: false,
+          decision: "deny",
+          reason: `reviewer_unavailable: ${String(error)}`,
+          violations: ["reviewer_unavailable"],
+        },
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        verdict: {
+          allow: false,
+          decision: "deny",
+          reason: `reviewer_http_${response.status}`,
+          violations: ["reviewer_http_error"],
+        },
+      }
+    }
+
+    let payload
+    try {
+      payload = await response.json()
+    } catch {
+      return {
+        ok: false,
+        verdict: {
+          allow: false,
+          decision: "deny",
+          reason: "reviewer_non_json_response",
+          violations: ["reviewer_parse_error"],
+        },
+      }
+    }
+    return { ok: true, content: extractContent(payload) }
+  }
+
+  const initial = await requestCompletion({
+    reviewEnvelope: envelope,
+    effort: reasoningEffort,
+    tokenBudget: maxTokens,
+  })
+  if (!initial.ok) return initial.verdict
+
+  return parseReviewerVerdictWithRepair(initial.content, async ({ schemaErrors, previousVerdict }) => {
+    const repair = await requestCompletion({
+      reviewEnvelope: {
+        ...envelope,
+        reviewer_protocol: {
+          attempt: 2,
+          final_attempt: true,
+          schema_errors: schemaErrors,
+          previous_verdict: previousVerdict,
+          instruction:
+            "Return one complete schema-valid verdict for the same action. Preserve valid prior fields, never change negative evidence into permission, always include violations ([] when none), and keep reason concise.",
+        },
+      },
+      effort: SCHEMA_REPAIR_REASONING_EFFORT,
+      tokenBudget: SCHEMA_REPAIR_OUTPUT_TOKENS,
     })
-  } catch (error) {
-    return {
-      allow: false,
-      decision: "deny",
-      reason: `reviewer_unavailable: ${String(error)}`,
-      violations: ["reviewer_unavailable"],
-    }
-  }
-
-  if (!response.ok) {
-    return {
-      allow: false,
-      decision: "deny",
-      reason: `reviewer_http_${response.status}`,
-      violations: ["reviewer_http_error"],
-    }
-  }
-
-  let payload
-  try {
-    payload = await response.json()
-  } catch {
-    return { allow: false, decision: "deny", reason: "reviewer_non_json_response", violations: ["reviewer_parse_error"] }
-  }
-  return parseReviewerVerdict(extractContent(payload))
+    if (!repair.ok) throw new Error(repair.verdict.reason)
+    return repair.content
+  })
 }
 
 async function boundedInventory(root, limit = PREVIEW_SCAN_LIMIT) {
@@ -340,6 +399,9 @@ async function commitQuarantine(args, context, client) {
     reason: verdict.reason,
     violations: verdict.violations,
     reasoningEffort: QUARANTINE_REVIEW_REASONING_EFFORT,
+    repairAttempted: verdict.repairAttempted ?? false,
+    schemaErrors: verdict.schemaErrors ?? [],
+    initialSchemaErrors: verdict.initialSchemaErrors ?? [],
   })
   if (!verdict.allow) {
     throw new Error(`AUTO_VERIFY_DENY: ${verdict.reason}; violations=${JSON.stringify(verdict.violations ?? [])}`)
@@ -451,6 +513,9 @@ export const AutoVerifyGuardian = async ({ client, directory }) => {
       decision: verdict.decision,
       reason: verdict.reason,
       violations: verdict.violations,
+      repairAttempted: verdict.repairAttempted ?? false,
+      schemaErrors: verdict.schemaErrors ?? [],
+      initialSchemaErrors: verdict.initialSchemaErrors ?? [],
     })
     if (!verdict.allow) {
       throw new Error(`AUTO_VERIFY_DENY: ${verdict.reason}; violations=${JSON.stringify(verdict.violations ?? [])}`)

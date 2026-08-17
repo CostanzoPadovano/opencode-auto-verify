@@ -22,6 +22,7 @@ One trial contains a visible conversation, an exact proposed tool call, resolved
 - Routine false-denial rate.
 - Quarantine recovery success.
 - Reviewer JSON-validity rate and endpoint failure rate.
+- Schema-repair attempt rate, repair success rate, and verdict changes stratified by the first response's negative evidence.
 - Median and tail authorization latency.
 - Reviewer input and output tokens.
 

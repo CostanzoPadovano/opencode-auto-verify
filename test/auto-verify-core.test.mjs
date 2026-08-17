@@ -8,7 +8,9 @@ import {
   mergeConversationRecords,
   normalizeUserPath,
   parseReviewerVerdict,
+  parseReviewerVerdictWithRepair,
   PROTECTED_ROOT_SEMANTICS,
+  reviewerResponseFormat,
   reviewerSystemPrompt,
   selectReviewerTranscript,
   selectUserTranscript,
@@ -247,6 +249,163 @@ test("fails closed on contradictory risk and malformed violation arrays", () => 
 test("fails closed on malformed reviewer output", () => {
   assert.equal(parseReviewerVerdict("looks safe").allow, false)
   assert.equal(parseReviewerVerdict("```json\n{bad}\n```").allow, false)
+  assert.equal(parseReviewerVerdict('[{"decision":"allow"}]').allow, false)
+})
+
+test("publishes a strict reviewer JSON schema with every authorization field required", () => {
+  const responseFormat = reviewerResponseFormat()
+  assert.equal(responseFormat.type, "json_schema")
+  assert.equal(responseFormat.json_schema.strict, true)
+  assert.equal(responseFormat.json_schema.schema.additionalProperties, false)
+  assert.deepEqual(responseFormat.json_schema.schema.required, [
+    "decision",
+    "risk_level",
+    "user_authorized",
+    "scope_match",
+    "protected_conflict",
+    "violations",
+    "reason",
+  ])
+})
+
+test("repairs one missing violations array while preserving a legitimate allow", async () => {
+  const incomplete = {
+    decision: "allow",
+    risk_level: "low",
+    user_authorized: true,
+    scope_match: true,
+    protected_conflict: false,
+    reason: "Reads two CSV files and prints metadata without filesystem mutation.",
+  }
+  let repairCalls = 0
+  const result = await parseReviewerVerdictWithRepair(JSON.stringify(incomplete), async (context) => {
+    repairCalls += 1
+    assert.deepEqual(context.schemaErrors, ["invalid_violations_array"])
+    assert.equal(context.previousVerdict.decision, "allow")
+    return JSON.stringify({ ...incomplete, violations: [] })
+  })
+
+  assert.equal(repairCalls, 1)
+  assert.equal(result.allow, true)
+  assert.equal(result.repairAttempted, true)
+})
+
+test("schema repair cannot reverse negative evidence and runs at most once", async () => {
+  const negative = {
+    decision: "deny",
+    risk_level: "high",
+    user_authorized: false,
+    scope_match: false,
+    protected_conflict: true,
+    reason: "The requested effect conflicts with a protected root.",
+  }
+  const allow = {
+    decision: "allow",
+    risk_level: "low",
+    user_authorized: true,
+    scope_match: true,
+    protected_conflict: false,
+    violations: [],
+    reason: "Allowed after repair.",
+  }
+  let repairCalls = 0
+  const monotonic = await parseReviewerVerdictWithRepair(JSON.stringify(negative), async () => {
+    repairCalls += 1
+    return JSON.stringify(allow)
+  })
+  assert.equal(monotonic.allow, false)
+  assert.equal(monotonic.reason, "reviewer_schema_repair_cannot_override_negative_evidence")
+
+  const stillMalformed = await parseReviewerVerdictWithRepair("not json", async () => {
+    repairCalls += 1
+    return "still not json"
+  })
+  assert.equal(stillMalformed.allow, false)
+  assert.equal(stillMalformed.reason, "reviewer_schema_invalid_after_repair")
+  assert.equal(repairCalls, 2)
+})
+
+test("an unparseable first response cannot be repaired into permission", async () => {
+  const repairedAllow = JSON.stringify({
+    decision: "allow",
+    risk_level: "low",
+    user_authorized: true,
+    scope_match: true,
+    protected_conflict: false,
+    violations: [],
+    reason: "Allowed after repair.",
+  })
+  let repairCalls = 0
+  const result = await parseReviewerVerdictWithRepair('[{"decision":"deny"}]', async () => {
+    repairCalls += 1
+    return repairedAllow
+  })
+
+  assert.equal(result.allow, false)
+  assert.equal(result.reason, "reviewer_schema_repair_cannot_override_negative_evidence")
+  assert.equal(repairCalls, 1)
+})
+
+test("a schema-valid verdict never spends the repair retry", async () => {
+  let repairCalls = 0
+  const result = await parseReviewerVerdictWithRepair(JSON.stringify({
+    decision: "deny",
+    risk_level: "high",
+    user_authorized: false,
+    scope_match: false,
+    protected_conflict: false,
+    violations: ["scope_mismatch"],
+    reason: "The external effect is not authorized.",
+  }), async () => {
+    repairCalls += 1
+    throw new Error("repair must not run")
+  })
+  assert.equal(result.allow, false)
+  assert.equal(result.schemaValid, true)
+  assert.equal(result.repairAttempted, false)
+  assert.equal(repairCalls, 0)
+})
+
+test("fails closed when the single schema-repair request fails", async () => {
+  let repairCalls = 0
+  const result = await parseReviewerVerdictWithRepair(JSON.stringify({
+    decision: "allow",
+    risk_level: "low",
+    user_authorized: true,
+    scope_match: true,
+    protected_conflict: false,
+    reason: "The command is a bounded read-only inspection.",
+  }), async () => {
+    repairCalls += 1
+    throw new Error("reviewer unavailable")
+  })
+
+  assert.equal(result.allow, false)
+  assert.equal(result.reason, "reviewer_schema_repair_failed")
+  assert.equal(result.repairAttempted, true)
+  assert.equal(repairCalls, 1)
+})
+
+test("repairs an overlong reason without changing the authorization fields", async () => {
+  const incomplete = {
+    decision: "allow",
+    risk_level: "low",
+    user_authorized: true,
+    scope_match: true,
+    protected_conflict: false,
+    violations: [],
+    reason: "x".repeat(401),
+  }
+  let repairCalls = 0
+  const result = await parseReviewerVerdictWithRepair(JSON.stringify(incomplete), async ({ schemaErrors }) => {
+    repairCalls += 1
+    assert.deepEqual(schemaErrors, ["reason_too_long"])
+    return JSON.stringify({ ...incomplete, reason: "Authorized bounded read-only inspection." })
+  })
+
+  assert.equal(result.allow, true)
+  assert.equal(result.repairAttempted, true)
+  assert.equal(repairCalls, 1)
 })
 
 test("defines protected projects as bulk-removal boundaries rather than read-only roots", () => {

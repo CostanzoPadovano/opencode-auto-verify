@@ -11,6 +11,7 @@ All notable changes to this project will be documented here. The format follows 
 - Replaced the broad `nvidia-smi` fallback with an explicit query-only allowlist; hardware controls and unknown forms now require review.
 - Routed GNU `find` output-file actions through review instead of treating them as read-only, and made WSL Windows-mount boundaries case-insensitive.
 - Refused symlinked components while creating a configured quarantine root, before any child directory can be created through the redirect.
+- Added strict JSON-Schema-constrained reviewer output and one monotonic, fail-closed schema-repair attempt so an omitted field cannot silently authorize or unnecessarily terminate a legitimate reviewed action.
 
 ## [0.1.0] - 2026-08-17
 

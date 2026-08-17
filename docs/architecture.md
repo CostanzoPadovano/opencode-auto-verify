@@ -51,7 +51,9 @@ User text can authorize. Assistant text can explain what a later “yes” refer
 - `protected_conflict` is false.
 - `violations` is a valid array of nonempty strings and is empty.
 
-Malformed, unavailable, timed-out, or incomplete reviewer responses fail closed for calls that reached review.
+Reviewer requests use a strict JSON Schema by default. The local parser independently validates the same required fields, rejects wrappers and unexpected properties, and never interprets a missing field as positive evidence. When the first response is structurally invalid, the reviewer receives exactly one low-effort repair request containing the schema errors and a bounded copy of previously valid fields. A repair may complete a legitimate allow only if the first payload was a parseable object and contained no negative authorization fields. It cannot reverse a prior deny, high or critical risk, explicit authorization failure, scope failure, protected conflict, or nonempty violation set; an unparseable response likewise cannot be repaired into permission. A second malformed response fails closed. Schema-valid denials are never retried.
+
+Unavailable, timed-out, incompatible, or non-JSON endpoints also fail closed for calls that reached review. Operators may select `json_object` or `off` only for endpoint compatibility; doing so does not relax local schema validation.
 
 ## Transcript compaction
 

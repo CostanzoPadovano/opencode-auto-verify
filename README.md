@@ -98,12 +98,17 @@ Path lists are separated by semicolons.
 | `OPENCODE_AUTO_VERIFY_TIMEOUT_MS` | General review timeout | `180000` |
 | `OPENCODE_AUTO_VERIFY_REASONING_EFFORT` | General semantic-review effort | `xhigh` |
 | `OPENCODE_AUTO_VERIFY_MAX_TOKENS` | General review output budget | `8192` |
+| `OPENCODE_AUTO_VERIFY_RESPONSE_FORMAT` | Reviewer output constraint: `json_schema`, `json_object`, or `off` | `json_schema` |
+| `OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_REASONING_EFFORT` | Effort for the single schema-repair attempt | `low` |
+| `OPENCODE_AUTO_VERIFY_SCHEMA_REPAIR_MAX_TOKENS` | Output budget for the single schema-repair attempt | `1024` |
 | `OPENCODE_QUARANTINE_REVIEW_REASONING_EFFORT` | Narrow quarantine-commit review effort | `low` |
 | `OPENCODE_QUARANTINE_REVIEW_MAX_TOKENS` | Narrow quarantine-commit output budget | `2048` |
 | `OPENCODE_QUARANTINE_PREVIEW_TTL_MS` | Lifetime of a preview token | `600000` |
 | `OPENCODE_QUARANTINE_SCAN_LIMIT` | Maximum entries counted during preview | `20000` |
 
 General review defaults to `xhigh` because scope reconstruction and conflicting constraints are the difficult part. Quarantine commit uses `low` by default because the preview has already resolved one exact target; the second review still prevents an arbitrary preview from becoming authorization.
+
+The default reviewer request uses a strict JSON Schema. If a provider ignores the constraint and returns malformed output, Auto-Verify makes exactly one low-effort schema-repair request. It never fills a missing field locally, never retries a schema-valid denial, and never permits the repair to reverse negative evidence from the first response. A repaired allow is possible only when the first payload was a parseable object with no negative authorization fields; prose, invalid JSON, and wrappers remain fail-closed even if the retry says allow. A second malformed response also fails closed. `json_object` and `off` are compatibility modes for endpoints without JSON-Schema support; the same parser and one-retry boundary still apply.
 
 ## Validation
 

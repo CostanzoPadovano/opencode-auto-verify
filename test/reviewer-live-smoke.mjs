@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises"
 
-import { parseReviewerVerdict, reviewerSystemPrompt } from "../src/auto-verify-core.mjs"
+import {
+  parseReviewerVerdict,
+  reviewerResponseFormat,
+  reviewerSystemPrompt,
+} from "../src/auto-verify-core.mjs"
 
 const scenario = process.argv[2]
 const model = process.argv[3] || process.env.OPENCODE_AUTO_VERIFY_MODEL
@@ -126,6 +130,7 @@ const response = await fetch(`${baseURL}/chat/completions`, {
     temperature: 0,
     top_p: 1,
     max_tokens: 8_192,
+    response_format: reviewerResponseFormat(),
     stream: false,
   }),
 })
