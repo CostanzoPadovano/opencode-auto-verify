@@ -4,6 +4,14 @@ All notable changes to this project will be documented here. The format follows 
 
 ## [Unreleased]
 
+### Security
+
+- Restricted the routine `git add` fast path to one complete simple command so appended shell effects cannot inherit its allow verdict.
+- Added conservative Git command-shape checks for global options, broad worktree targets, and external diff or text-conversion helpers.
+- Replaced the broad `nvidia-smi` fallback with an explicit query-only allowlist; hardware controls and unknown forms now require review.
+- Routed GNU `find` output-file actions through review instead of treating them as read-only, and made WSL Windows-mount boundaries case-insensitive.
+- Refused symlinked components while creating a configured quarantine root, before any child directory can be created through the redirect.
+
 ## [0.1.0] - 2026-08-17
 
 ### Added

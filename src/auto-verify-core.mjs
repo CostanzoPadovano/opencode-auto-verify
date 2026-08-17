@@ -78,6 +78,7 @@ const NARROW_DELETE_RULES = [
 
 const MUTATION_RULES = [
   ["filesystem-create", /(^|[;&|()\s])(?:mkdir|touch)(?:\s|$)/i],
+  ["find-output-file", /\bfind\b[^;&|\r\n]*?-(?:fprint0?|fprintf|fls)\b/i],
   ["move", /(^|[;&|()\s])(?:mv|move-item|move)(?:\s|$)/i],
   ["copy", /(^|[;&|()\s])(?:cp|copy-item|copy|robocopy|rsync)(?:\s|$)/i],
   ["write-redirection", /(^|[^<])(?:>>|>)(?!>)/],
@@ -88,7 +89,10 @@ const MUTATION_RULES = [
   ["git-mutation", /\bgit\s+(?:add|commit|merge|rebase|cherry-pick|checkout|switch|restore|stash|push|tag)\b/i],
   ["archive-extract", /(^|[;&|()\s])(?:tar|unzip|7z)(?:\s|$)/i],
   ["ripgrep-preprocessor", /\brg\b[^;&|\r\n]*--pre(?:-glob)?(?:[=\s]|$)/i],
-  ["gpu-state-change", /\bnvidia-smi\b[\s\S]*?(?:-(?:pl|pm|lgc|lmc|rgc|rmc|mig)\b|-r\b|--gpu-reset\b|--reset-)/i],
+  [
+    "gpu-state-change",
+    /\bnvidia-smi(?:\.exe)?\b[\s\S]*?(?:-(?:ac|rac|pl|pm|e|p|c|dm|fdm|am|caa|mig|gtt|lgc|lmc|rgc|rmc|lmcd|rmcd|cc)\b|-r\b|--(?:applications-clocks|reset-applications-clocks|power-limit|persistence-mode|ecc-config|reset-ecc-errors|compute-mode|driver-model|force-driver-model|gpu-operation-mode|accounting-mode|clear-accounted-apps|multi-instance-gpu|gpu-target-temp|lock-gpu-clocks|lock-memory-clocks|reset-gpu-clocks|reset-memory-clocks|lock-memory-clocks-deferred|reset-memory-clocks-deferred|gpu-reset|reset-[a-z0-9-]+)\b)/i,
+  ],
 ]
 
 const SAFE_TOOL_NAMES = new Set([
@@ -114,9 +118,63 @@ const GUARDED_EDIT_TOOL_NAMES = new Set([
 ])
 
 const EDIT_PATH_KEYS = new Set(["file", "filepath", "file_path", "filename", "path", "target"])
+const COMMAND_CONTROL_TOKENS = new Set(["&&", "||", ";", "|", "(", ")"])
+const GIT_GLOBAL_OPTIONS_WITH_VALUE = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--config-env",
+  "--exec-path",
+  "--list-cmds",
+  "--attr-source",
+])
+const GIT_GLOBAL_OPTIONS_WITHOUT_VALUE = new Set([
+  "--bare",
+  "--no-replace-objects",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+  "--no-optional-locks",
+  "--no-lazy-fetch",
+  "--no-advice",
+  "--paginate",
+  "--no-pager",
+  "-p",
+  "-P",
+])
+const NVIDIA_QUERY_FLAGS = new Set([
+  "-h",
+  "--help",
+  "--version",
+  "-L",
+  "--list-gpus",
+  "-B",
+  "--list-excluded-gpus",
+  "-q",
+  "--query",
+  "-x",
+  "--xml-format",
+  "--dtd",
+])
+const NVIDIA_QUERY_FLAGS_WITH_VALUE = new Set([
+  "--format",
+  "-i",
+  "--id",
+  "-d",
+  "--display",
+  "-l",
+  "--loop",
+  "-lms",
+  "--loop-ms",
+])
 
 function comparablePath(value) {
-  return String(value).replace(/\\/g, "/").replace(/\/+$/, "")
+  const normalized = String(value).replace(/\\/g, "/").replace(/\/+$/, "")
+  return /^\/mnt\/[a-z](?:\/|$)/i.test(normalized) ? normalized.toLowerCase() : normalized
 }
 
 function stripOuterQuotes(value) {
@@ -125,6 +183,148 @@ function stripOuterQuotes(value) {
     return text.slice(1, -1)
   }
   return text
+}
+
+function shellTokens(value) {
+  return (String(value).match(/"[^"\r\n]*"|'[^'\r\n]*'|&&|\|\||[;&|()]|[^\s;&|()]+/g) ?? []).map(stripOuterQuotes)
+}
+
+function commandBasename(token) {
+  return String(token).replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? ""
+}
+
+function isGitExecutable(token) {
+  const name = commandBasename(token)
+  return name === "git" || name === "git.exe" || name === "git.cmd" || name === "git.bat"
+}
+
+function isNvidiaSmiExecutable(token) {
+  const name = commandBasename(token)
+  return name === "nvidia-smi" || name === "nvidia-smi.exe"
+}
+
+function isBroadGitTarget(token) {
+  const target = String(token).replace(/\\/g, "/")
+  if ([".", "./", "..", "../", "*", "**", "./*", "./**", "../*", "../**", ":/"].includes(target)) {
+    return true
+  }
+  return /^:\([^)]*(?:top|glob)[^)]*\)\**$/i.test(target)
+}
+
+function gitSubcommandIndex(tokens, start, end) {
+  let index = start
+  while (index < end) {
+    const token = tokens[index]
+    if (GIT_GLOBAL_OPTIONS_WITHOUT_VALUE.has(token)) {
+      index += 1
+      continue
+    }
+    if (GIT_GLOBAL_OPTIONS_WITH_VALUE.has(token)) {
+      if (index + 1 >= end) return end
+      index += 2
+      continue
+    }
+    if (
+      (token.startsWith("-C") && token.length > 2) ||
+      (token.startsWith("-c") && token.length > 2) ||
+      [...GIT_GLOBAL_OPTIONS_WITH_VALUE]
+        .filter((option) => option.startsWith("--"))
+        .some((option) => token.startsWith(`${option}=`))
+    ) {
+      index += 1
+      continue
+    }
+    return index
+  }
+  return end
+}
+
+function isShellExecutable(token) {
+  return ["sh", "bash", "dash", "zsh", "ksh", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"].includes(
+    commandBasename(token),
+  )
+}
+
+function isShellCommandFlag(token) {
+  return (
+    /^-[abefhklmnptuvx]*c[abefhklmnptuvx]*$/i.test(token) ||
+    /^-(?:command|encodedcommand)$/i.test(token) ||
+    /^\/c$/i.test(token)
+  )
+}
+
+function classifyGitSafety(command, depth = 0) {
+  const tokens = shellTokens(command)
+  let reviewReason = null
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isGitExecutable(tokens[index])) continue
+    let end = index + 1
+    while (end < tokens.length && !COMMAND_CONTROL_TOKENS.has(tokens[end])) end += 1
+
+    const subcommandIndex = gitSubcommandIndex(tokens, index + 1, end)
+    if (subcommandIndex >= end) continue
+    const subcommand = tokens[subcommandIndex].toLowerCase()
+    const args = tokens.slice(subcommandIndex + 1, end)
+
+    if (subcommand === "clean") return { level: "block", reason: "git-clean", command }
+    if (subcommand === "reset" && args.some((arg) => arg === "--hard" || arg.startsWith("--hard="))) {
+      return { level: "block", reason: "git-reset-hard", command }
+    }
+    if (subcommand === "checkout" && (args.includes("--") || args.some(isBroadGitTarget))) {
+      return { level: "block", reason: "git-checkout-revert", command }
+    }
+    if (
+      subcommand === "restore" &&
+      (args.some((arg) => arg === "--worktree" || arg.startsWith("--worktree=")) || args.some(isBroadGitTarget))
+    ) {
+      return { level: "block", reason: "git-restore-broad", command }
+    }
+    if (["diff", "log", "show"].includes(subcommand)) reviewReason = "git-inspection-requires-review"
+    index = end - 1
+  }
+
+  if (depth < 2) {
+    for (let index = 0; index < tokens.length - 2; index += 1) {
+      if (!isShellExecutable(tokens[index])) continue
+      for (let flagIndex = index + 1; flagIndex < tokens.length - 1; flagIndex += 1) {
+        if (COMMAND_CONTROL_TOKENS.has(tokens[flagIndex]) || isShellExecutable(tokens[flagIndex])) break
+        if (!isShellCommandFlag(tokens[flagIndex])) continue
+        const nested = classifyGitSafety(tokens[flagIndex + 1], depth + 1)
+        if (nested?.level === "block") return { ...nested, command }
+        if (nested?.level === "review") reviewReason = nested.reason
+        break
+      }
+    }
+  }
+
+  return reviewReason ? { level: "review", reason: reviewReason, command } : null
+}
+
+function isReadOnlyNvidiaSmi(command) {
+  if (/[;&|`$<>\r\n]/.test(command)) return false
+  const tokens = shellTokens(command)
+  if (!tokens.length || !isNvidiaSmiExecutable(tokens[0])) return false
+  if (tokens.some((token) => COMMAND_CONTROL_TOKENS.has(token))) return false
+  if (tokens.length === 1) return true
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (NVIDIA_QUERY_FLAGS.has(token)) continue
+    if (
+      /^--query-[a-z0-9-]+=.*/i.test(token) ||
+      /^(?:--format|--id|--display|--loop|--loop-ms)=.+/i.test(token)
+    ) {
+      continue
+    }
+    if (token.startsWith("--query-") || NVIDIA_QUERY_FLAGS_WITH_VALUE.has(token)) {
+      if (index + 1 >= tokens.length || tokens[index + 1].startsWith("-")) return false
+      index += 1
+      continue
+    }
+    return false
+  }
+  return true
 }
 
 export function parsePathList(value, fallback) {
@@ -198,15 +398,19 @@ export function classifyCommand(command) {
   const text = String(command ?? "").trim()
   if (!text) return { level: "review", reason: "empty_or_missing_command" }
 
+  const gitSafety = classifyGitSafety(text)
+
   for (const [reason, pattern] of HIGH_IMPACT_DELETE_RULES) {
     if (pattern.test(text)) return { level: "block", reason, command: text }
   }
+  if (gitSafety?.level === "block") return gitSafety
 
   for (const [reason, pattern] of NARROW_DELETE_RULES) {
     if (pattern.test(text)) return { level: "review", reason, command: text }
   }
+  if (gitSafety?.level === "review") return gitSafety
 
-  if (/^git\s+add(?:\s|$)/i.test(text)) {
+  if (/^git\s+add\b[^;&|`$<>\r\n]*$/i.test(text)) {
     return { level: "allow", reason: "routine_git_staging", command: text }
   }
 
@@ -218,10 +422,9 @@ export function classifyCommand(command) {
     /^pwd\s*$/i,
     /^(?:ls|cat|head|tail|wc|stat|du|df|file|grep|rg)\b(?![\s\S]*(?:>>|>))[^;&|`$\r\n]*$/i,
     /^find\b(?![\s\S]*(?:-delete|-exec|-ok|>>|>))[^;&|`$\r\n]*$/i,
-    /^git\s+(?:status|diff|log|show|rev-parse)\b[^;&|`$\r\n]*$/i,
-    /^nvidia-smi\b[^;&|`$\r\n]*$/i,
+    /^git\s+(?:status|rev-parse)\b[^;&|`$\r\n]*$/i,
   ]
-  if (safePatterns.some((pattern) => pattern.test(text))) {
+  if (safePatterns.some((pattern) => pattern.test(text)) || isReadOnlyNvidiaSmi(text)) {
     return { level: "allow", reason: "read_only_allowlist", command: text }
   }
 

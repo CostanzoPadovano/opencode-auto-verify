@@ -67,6 +67,32 @@ async function assertRealDirectory(directory, expectedParent) {
   return { info, resolved }
 }
 
+async function ensureRealDirectoryTree(directory) {
+  const target = resolvedPath(directory)
+  const parsed = path.parse(target)
+  const segments = path.relative(parsed.root, target).split(path.sep).filter(Boolean)
+  let current = parsed.root
+
+  for (const segment of segments) {
+    current = path.join(current, segment)
+    try {
+      await mkdir(current, { recursive: false, mode: 0o700 })
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error
+    }
+
+    const info = await lstat(current)
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error("AUTO_VERIFY_DENY: quarantine_path_component_is_not_a_real_directory")
+    }
+    const real = await realpath(current)
+    if (!sameResolvedPath(real, current)) {
+      throw new Error("AUTO_VERIFY_DENY: quarantine_path_escapes_the_managed_root")
+    }
+  }
+  return target
+}
+
 export async function assertQuarantineDestination(layout, quarantineRoot) {
   const root = await assertRealDirectory(quarantineRoot, quarantineRoot)
   const items = await assertRealDirectory(layout.itemsRoot, root.resolved)
@@ -84,7 +110,7 @@ export async function assertQuarantineDestination(layout, quarantineRoot) {
 }
 
 export async function prepareQuarantineDestination(layout, quarantineRoot, sourceDevice) {
-  await mkdir(quarantineRoot, { recursive: true, mode: 0o700 })
+  await ensureRealDirectoryTree(quarantineRoot)
   const root = await assertRealDirectory(quarantineRoot, quarantineRoot)
   if (String((await stat(root.resolved)).dev) !== String(sourceDevice)) {
     throw new Error("AUTO_VERIFY_DENY: cross-device quarantine requires a separately verified archive workflow")
