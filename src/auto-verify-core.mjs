@@ -236,6 +236,48 @@ const NVIDIA_QUERY_FLAGS_WITH_VALUE = new Set([
   "-lms",
   "--loop-ms",
 ])
+const LOW_IMPACT_EXECUTABLES = new Set([
+  "pwd",
+  "ls",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "stat",
+  "du",
+  "df",
+  "file",
+  "grep",
+  "rg",
+  "cut",
+  "sort",
+  "uniq",
+  "tr",
+  "jq",
+  "ffprobe",
+  "mediainfo",
+  "which",
+  "whereis",
+  "uname",
+  "lscpu",
+  "lsblk",
+  "free",
+  "uptime",
+  "date",
+  "id",
+  "whoami",
+  "realpath",
+  "readlink",
+  "md5sum",
+  "sha1sum",
+  "sha256sum",
+  "sha512sum",
+  "cksum",
+  "echo",
+  "printf",
+  "test",
+  "[",
+])
 
 function comparablePath(value) {
   const normalized = String(value).replace(/\\/g, "/").replace(/\/+$/, "")
@@ -392,6 +434,52 @@ function isReadOnlyNvidiaSmi(command) {
   return true
 }
 
+function stripHarmlessRedirections(command) {
+  return command
+    .replace(/\b\d*>\s*&\s*\d+\b/g, " ")
+    .replace(/\b\d*>\s*\/dev\/null\b/g, " ")
+}
+
+function isKnownLowImpactCommand(command) {
+  if (/[`$\r\n]/.test(command)) return false
+  const withoutHarmlessRedirection = stripHarmlessRedirections(command)
+  if (/[<>]/.test(withoutHarmlessRedirection)) return false
+
+  const tokens = shellTokens(withoutHarmlessRedirection)
+  if (!tokens.length || tokens.some((token) => token === "(" || token === ")")) return false
+
+  const segments = []
+  let current = []
+  for (const token of tokens) {
+    if ([";", "&&", "||", "|"].includes(token)) {
+      if (!current.length) return false
+      segments.push(current)
+      current = []
+    } else {
+      current.push(token)
+    }
+  }
+  if (!current.length) return false
+  segments.push(current)
+
+  return segments.every((segment) => {
+    const executable = commandBasename(segment[0])
+    if (executable === "nvidia-smi" || executable === "nvidia-smi.exe") {
+      return isReadOnlyNvidiaSmi(segment.join(" "))
+    }
+    if (executable === "git") {
+      return /^(?:git\s+)(?:status|rev-parse)\b/i.test(segment.join(" "))
+    }
+    if (executable === "find") {
+      return !segment.some((token) => /^-(?:delete|exec|execdir|ok|okdir|fprint0?|fprintf|fls)$/i.test(token))
+    }
+    if (executable === "ffprobe") {
+      return !segment.some((token) => token === "-o" || token.startsWith("-o="))
+    }
+    return LOW_IMPACT_EXECUTABLES.has(executable)
+  })
+}
+
 export function parsePathList(value, fallback) {
   if (!value?.trim()) return [...fallback]
   return value
@@ -500,8 +588,9 @@ export function classifyCommand(command) {
     return { level: "allow", reason: "routine_git_staging", command: text }
   }
 
+  const mutationText = stripHarmlessRedirections(text)
   for (const [reason, pattern] of MUTATION_RULES) {
-    if (pattern.test(text)) return { level: "review", reason, command: text }
+    if (pattern.test(mutationText)) return { level: "review", reason, command: text }
   }
 
   const safePatterns = [
@@ -512,6 +601,9 @@ export function classifyCommand(command) {
   ]
   if (safePatterns.some((pattern) => pattern.test(text)) || isReadOnlyNvidiaSmi(text)) {
     return { level: "allow", reason: "read_only_allowlist", command: text }
+  }
+  if (isKnownLowImpactCommand(text)) {
+    return { level: "allow", reason: "known_low_impact_command", command: text }
   }
 
   return { level: "review", reason: "command_not_proven_read_only", command: text }

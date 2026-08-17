@@ -20,6 +20,7 @@ The design intentionally resembles human re-reading before a consequential actio
 ## What it permits
 
 - Read-only inspection and ordinary verification.
+- Known low-impact inspection chains, including `ffprobe`, metadata tools, hashes, and read-only pipelines, without semantic-review latency.
 - Exact file creation and edits below configured routine writable roots.
 - Normal temporary scripts in configured temporary roots.
 - Git staging and other actions proven routine by the deterministic classifier.
@@ -108,6 +109,8 @@ Path lists are separated by semicolons.
 | `OPENCODE_QUARANTINE_SCAN_LIMIT` | Maximum entries counted during preview | `20000` |
 
 General review defaults to `xhigh` because scope reconstruction and conflicting constraints are the difficult part. Quarantine commit uses `low` by default because the preview has already resolved one exact target; the second review still prevents an arbitrary preview from becoming authorization.
+
+Known low-impact operations never call the semantic reviewer. Unknown interpreters, network access, package changes, cross-workspace mutations, permissions, relocation, and deletion remain reviewable or blocked according to their effect. This keeps routine inspection fast without treating arbitrary code execution as proven read-only.
 
 The default reviewer request uses a strict JSON Schema. If a provider ignores the constraint and returns malformed output, Auto-Verify makes exactly one low-effort schema-repair request. It never fills a missing field locally, never retries a schema-valid denial, and never permits the repair to reverse negative evidence from the first response. A repaired allow is possible only when the first payload was a parseable object with no negative authorization fields; prose, invalid JSON, and wrappers remain fail-closed even if the retry says allow. A second malformed response also fails closed. `json_object` and `off` are compatibility modes for endpoints without JSON-Schema support; the same parser and one-retry boundary still apply.
 

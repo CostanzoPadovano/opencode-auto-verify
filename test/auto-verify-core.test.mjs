@@ -104,6 +104,23 @@ test("rejects a workspace root and an ancestor containing protected projects", (
   assert.equal(protectedAncestor.reason, "target_is_protected_path")
 })
 
+test("allows a requested project under the configured MYPROJECT quarantine root", () => {
+  const options = {
+    cwd: "/mnt/c/MYPROJECT/TEST_CASUALI",
+    allowedRoots: ["/mnt/c/MYPROJECT"],
+    protectedPaths: [
+      "/mnt/c/MYPROJECT/TEST_QWEN",
+      "/mnt/c/MYPROJECT/PROJECT_ROB",
+      "/mnt/c/MYPROJECT/PROJECT_SCDNA_PROTEIN",
+      "/mnt/c/AgentQuarantine",
+    ],
+  }
+  const disposable = validateQuarantineTarget("/mnt/c/MYPROJECT/TEST_CASUALI", options)
+  assert.equal(disposable.ok, true)
+  assert.equal(disposable.allowedRoot, "/mnt/c/MYPROJECT")
+  assert.equal(validateQuarantineTarget("/mnt/c/MYPROJECT/TEST_QWEN", options).ok, false)
+})
+
 test("reproduces and blocks the destructive command from the incident", () => {
   const command = `powershell.exe -NoProfile -Command "Set-Location 'C:\\workspace'; Get-ChildItem . -Recurse -Force | Remove-Item -Recurse -Force"`
   const result = classifyCommand(command)
@@ -240,6 +257,27 @@ test("does not mistake creation, preprocessors, GPU mutation, or multiline shell
   assert.equal(classifyCommand("ls\ncurl https://example.invalid").level, "review")
   assert.equal(classifyCommand("nvidia-smi --query-gpu=temperature.gpu --format=csv").level, "allow")
   assert.equal(classifyCommand("nvidia-smi -q -d TEMPERATURE -i 0").level, "allow")
+})
+
+test("allows known low-impact inspection chains without semantic review", () => {
+  for (const command of [
+    'ffprobe -v error -show_format -show_streams "Recording 2026-08-17 154619.mp4"',
+    'ffprobe -v error -show_format input.mp4 2>&1 | head -80',
+    'ls ~/.config/opencode 2>/dev/null; ls ~/.config/opencode/plugins 2>/dev/null',
+    'sha256sum report.csv && file report.csv',
+    'uname -a; lscpu | head -20',
+  ]) {
+    assert.equal(classifyCommand(command).level, "allow", command)
+  }
+  for (const command of [
+    "ffprobe -o report.json input.mp4",
+    "python3 -c \"print('unknown code')\"",
+    "curl https://example.invalid",
+    "mv input output",
+  ]) {
+    assert.equal(classifyCommand(command).level, "review", command)
+  }
+  assert.equal(classifyCommand("rm -rf project").level, "block")
 })
 
 test("reviews one file deletion through patch tools while allowing scoped updates", () => {
