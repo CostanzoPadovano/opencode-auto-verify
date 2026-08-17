@@ -13,6 +13,7 @@ All notable changes to this project will be documented here. The format follows 
 - Refused symlinked components while creating a configured quarantine root, before any child directory can be created through the redirect.
 - Added strict JSON-Schema-constrained reviewer output and one monotonic, fail-closed schema-repair attempt so an omitted field cannot silently authorize or unnecessarily terminate a legitimate reviewed action.
 - Load an allowlisted private `auto-verify.env` directly so reviewer credentials survive restarts without hard-coded secrets or shell-profile coupling, and make HTTP authentication failures actionable.
+- Treat each session's active OpenCode directory as a routine writable root so ordinary project creation and edits do not inherit the inert `/workspace` example default; destructive operations remain independently guarded.
 
 ## [0.1.0] - 2026-08-17
 

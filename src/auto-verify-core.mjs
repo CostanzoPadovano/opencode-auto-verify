@@ -400,6 +400,27 @@ export function parsePathList(value, fallback) {
     .filter(Boolean)
 }
 
+export function sessionRoutineWritableRoots(cwd, configuredRoots = DEFAULT_ROUTINE_WRITABLE_ROOTS) {
+  const candidates = [...configuredRoots]
+  if (cwd) candidates.unshift(cwd)
+
+  const result = []
+  const seen = new Set()
+  for (const candidate of candidates) {
+    try {
+      const normalized = normalizeUserPath(candidate, cwd || DEFAULT_ALLOWED_ROOTS[0])
+      const key = comparablePath(normalized)
+      if (!seen.has(key)) {
+        seen.add(key)
+        result.push(normalized)
+      }
+    } catch {
+      // An invalid configured root cannot broaden the routine-write boundary.
+    }
+  }
+  return result
+}
+
 export function normalizeUserPath(input, cwd = DEFAULT_ALLOWED_ROOTS[0]) {
   let value = stripOuterQuotes(input)
   if (!value) throw new Error("The target path is empty")

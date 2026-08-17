@@ -59,6 +59,8 @@ Unavailable, timed-out, incompatible, or non-JSON endpoints also fail closed for
 
 The installed plugin reads `<OpenCode config>/auto-verify.env` with a non-executing, allowlisted parser before resolving its settings. Process-environment values take precedence. This keeps deployment paths and credentials outside the repository without depending on the shell that happened to launch OpenCode. Unknown names and shell statements are ignored; the file is data, not executable startup code.
 
+The active OpenCode working directory is added to the routine writable roots for that session. This permits ordinary `write`, `edit`, and non-deleting patch operations in whichever project OpenCode was launched from, while paths outside that workspace still require review. File deletion, destructive shell commands, and quarantine rules remain on their independent stricter paths.
+
 ## Transcript compaction
 
 When the visible transcript exceeds the review budget, the selector retains user messages that look like persistent constraints—such as exclusions, keep-lists, “never,” “remember,” and equivalent Italian forms—then fills the remaining budget from the newest conversation entries. This reduces one known failure mode but is heuristic. Critical invariants should also live in the managed `AGENTS.md` policy and deterministic configuration.

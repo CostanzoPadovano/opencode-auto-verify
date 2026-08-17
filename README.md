@@ -87,7 +87,7 @@ Path lists are separated by semicolons.
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `OPENCODE_QUARANTINE_ALLOWED_ROOTS` | Roots from which quarantine moves may originate | `/workspace` |
-| `OPENCODE_AUTO_VERIFY_WRITABLE_ROOTS` | Roots where routine edit tools may proceed without semantic review | `/workspace;/tmp/opencode` |
+| `OPENCODE_AUTO_VERIFY_WRITABLE_ROOTS` | Additional roots where routine edit tools may proceed without semantic review; the active OpenCode directory is always included | `/workspace;/tmp/opencode` |
 | `OPENCODE_PROTECTED_PATHS` | Roots protected against bulk removal, relocation, and ancestor mutation | `/workspace;/quarantine` |
 | `OPENCODE_QUARANTINE_ROOT` | Managed quarantine destination | `/quarantine` |
 | `OPENCODE_AUTO_VERIFY_BASE_URL` | OpenAI-compatible API base URL | WSL gateway on port `8030` |

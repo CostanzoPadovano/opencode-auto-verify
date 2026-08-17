@@ -22,6 +22,7 @@ import {
   reviewerResponseFormat,
   reviewerSystemPrompt,
   routerAuthorizationHeaders,
+  sessionRoutineWritableRoots,
   selectReviewerTranscript,
   validateQuarantineTarget,
 } from "./auto-verify-core.mjs"
@@ -188,7 +189,10 @@ async function modelReview({
       working_directory: sessionState.get(sessionID)?.directory ?? null,
       bulk_removal_protected_roots: PROTECTED_PATHS,
       protected_root_semantics: PROTECTED_ROOT_SEMANTICS,
-      routine_writable_roots: ROUTINE_WRITABLE_ROOTS,
+      routine_writable_roots: sessionRoutineWritableRoots(
+        sessionState.get(sessionID)?.directory,
+        ROUTINE_WRITABLE_ROOTS,
+      ),
       quarantine_root: QUARANTINE_ROOT,
     },
   }
@@ -480,6 +484,7 @@ export const AutoVerifyGuardian = async ({ client, directory }) => {
     directory,
     allowedRoots: ALLOWED_ROOTS,
     protectedPaths: PROTECTED_PATHS,
+    routineWritableRoots: sessionRoutineWritableRoots(directory, ROUTINE_WRITABLE_ROOTS),
     quarantineRoot: QUARANTINE_ROOT,
     failMode: "closed",
   })
@@ -496,9 +501,10 @@ export const AutoVerifyGuardian = async ({ client, directory }) => {
   },
 
   "tool.execute.before": async (input, output) => {
+    const workingDirectory = sessionState.get(input.sessionID)?.directory ?? directory
     const classification = classifyToolCall(input.tool, output.args, {
-      cwd: sessionState.get(input.sessionID)?.directory ?? directory,
-      routineWritableRoots: ROUTINE_WRITABLE_ROOTS,
+      cwd: workingDirectory,
+      routineWritableRoots: sessionRoutineWritableRoots(workingDirectory, ROUTINE_WRITABLE_ROOTS),
     })
     if (classification.level === "allow") return
     if (classification.level === "block") {

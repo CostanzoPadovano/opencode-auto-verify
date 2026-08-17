@@ -15,6 +15,7 @@ import {
   reviewerResponseFormat,
   reviewerSystemPrompt,
   routerAuthorizationHeaders,
+  sessionRoutineWritableRoots,
   selectReviewerTranscript,
   selectUserTranscript,
   validateQuarantineTarget,
@@ -165,6 +166,36 @@ test("allows routine workspace work and reviews effects outside routine roots", 
   )
   assert.equal(
     classifyToolCall("edit", { filePath: "/home/example/.ssh/config" }, { cwd: "/workspace" }).level,
+    "review",
+  )
+})
+
+test("treats the active OpenCode directory as a routine writable root", () => {
+  const cwd = "/mnt/c/MYPROJECT/TEST_CASUALI"
+  const writableRoots = sessionRoutineWritableRoots(cwd, ["/workspace", "/tmp/opencode"])
+  assert.deepEqual(writableRoots, [cwd, "/workspace", "/tmp/opencode"])
+  assert.equal(
+    classifyToolCall(
+      "write",
+      { filePath: "three-earth-bursts.html", content: "<!doctype html>" },
+      { cwd, routineWritableRoots: writableRoots },
+    ).level,
+    "allow",
+  )
+  assert.equal(
+    classifyToolCall(
+      "write",
+      { filePath: "/mnt/c/MYPROJECT/OTHER_PROJECT/file.txt", content: "external" },
+      { cwd, routineWritableRoots: writableRoots },
+    ).level,
+    "review",
+  )
+  assert.equal(
+    classifyToolCall(
+      "apply_patch",
+      { patch: "*** Begin Patch\n*** Delete File: three-earth-bursts.html\n*** End Patch" },
+      { cwd, routineWritableRoots: writableRoots },
+    ).level,
     "review",
   )
 })
