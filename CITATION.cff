@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software or its incident-driven safety design, please cite it as below."
+title: "OpenCode Auto-Verify: a risk-tiered execution guardian for agentic coding"
+type: software
+authors:
+  - family-names: Padovano
+    given-names: Costanzo
+repository-code: "https://github.com/CostanzoPadovano/opencode-auto-verify"
+url: "https://github.com/CostanzoPadovano/opencode-auto-verify"
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-08-17

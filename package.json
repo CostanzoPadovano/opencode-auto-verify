@@ -1,0 +1,32 @@
+{
+  "name": "opencode-auto-verify",
+  "version": "0.1.0",
+  "description": "Risk-tiered execution guardian and reversible quarantine for OpenCode agents",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Costanzo Padovano",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CostanzoPadovano/opencode-auto-verify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CostanzoPadovano/opencode-auto-verify/issues"
+  },
+  "homepage": "https://github.com/CostanzoPadovano/opencode-auto-verify#readme",
+  "files": [
+    "src",
+    "scripts",
+    "policy",
+    "examples",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node --check src/auto-verify-core.mjs && node --check src/quarantine-fs.mjs && node --check src/auto-verify-guardian.js && node --check scripts/install.mjs && node --check scripts/uninstall.mjs",
+    "test": "node test/auto-verify-core.test.mjs && node test/quarantine-fs.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
